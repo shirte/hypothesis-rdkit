@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="hypothesis-rdkit",
-    version="0.2",
+    version="0.3",
     maintainer="Steffen Hirte",
     maintainer_email="shirte@users.noreply.github.com",
     packages=find_packages(),
