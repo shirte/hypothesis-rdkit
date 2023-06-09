@@ -1,9 +1,8 @@
-from setuptools import setup, find_packages
-
+from setuptools import find_packages, setup
 
 setup(
     name="hypothesis-rdkit",
-    version="0.3",
+    version="0.5",
     maintainer="Steffen Hirte",
     maintainer_email="shirte@users.noreply.github.com",
     packages=find_packages(),
@@ -13,7 +12,7 @@ setup(
     license="MIT",
     license_files=("LICENSE",),
     install_requires=["hypothesis"],
-    extras_require={"dev": ["black", "isort"]},
+    extras_require={"dev": ["black", "isort"], "test": ["pytest"]},
     entry_points={"hypothesis": {"_ = hypothesis_rdkit.hook:_hypothesis_setup_hook"}},
     include_package_data=True,
     classifiers=[
