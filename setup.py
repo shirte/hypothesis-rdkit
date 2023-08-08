@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="hypothesis-rdkit",
-    version="0.5",
+    version="0.5.1",
     maintainer="Steffen Hirte",
     maintainer_email="shirte@users.noreply.github.com",
     packages=find_packages(),
@@ -11,7 +11,7 @@ setup(
     long_description_content_type="text/markdown",
     license="MIT",
     license_files=("LICENSE",),
-    install_requires=["hypothesis"],
+    install_requires=["hypothesis", "tqdm"],
     extras_require={"dev": ["black", "isort"], "test": ["pytest"]},
     entry_points={"hypothesis": {"_ = hypothesis_rdkit.hook:_hypothesis_setup_hook"}},
     include_package_data=True,
