@@ -172,17 +172,22 @@ def get_fragments(
         # BRICS has memory leak problems and the used memory accumulates if processes are
         # recycled --> kill processes after each batch
         pool = Pool(n_processes, maxtasksperchild=1)
-        fragments = set()
+        smiles_fragments = set()
         try:
             for result in pool.imap_unordered(
                 partial(consumer, timeout=timeout), batches
             ):
-                fragments.update(result)
+                smiles_fragments.update(result)
         finally:
             pool.close()
             pool.join()
 
-        fragments = [s for f in fragments if (s := MolFromSmiles(f)) is not None]
+        # remove fragments that are not valid smiles
+        fragments = []
+        for f in smiles_fragments:
+            mol = MolFromSmiles(f)
+            if mol is not None:
+                fragments.append(mol)
 
         with open(fragments_cache, "wb") as f:
             pickle.dump(fragments, f)

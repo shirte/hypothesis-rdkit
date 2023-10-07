@@ -36,7 +36,7 @@ from hypothesis_rdkit import mols
 from rdkit.Chem import GetMolFrags, Mol
 from rdkit.Chem.rdMolDescriptors import CalcNumRotatableBonds
 
-@given(mols(n_connected_components=2, max_num_rotatable_bonds=5))
+@given(mols(n_connected_components=2, max_rotatable_bonds=5))
 def test_molecule_mixtures(mol : Mol):
     frags = GetMolFrags(mol, asMols=True)
     assert len(frags) == 2
