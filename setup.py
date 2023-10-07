@@ -20,6 +20,7 @@ setup(
     maintainer_email="shirte@users.noreply.github.com",
     packages=find_packages(),
     url="https://github.com/shirte/hypothesis-rdkit",
+    description="Hypothesis strategies for RDKit",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     license="MIT",
