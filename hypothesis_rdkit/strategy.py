@@ -4,7 +4,6 @@ import string
 from functools import reduce
 
 import hypothesis.strategies as st
-import pkg_resources
 from rdkit.Chem import (
     BondType,
     CombineMols,
@@ -16,6 +15,12 @@ from rdkit.Chem import (
 )
 
 from .fragment import precompute
+
+# import importlib.resources or fall back to the backport
+try:
+    from importlib.resources import files
+except ImportError:
+    from importlib_resources import files
 
 __all__ = ["mols", "smiles", "mol_blocks"]
 
@@ -32,14 +37,14 @@ try:
     # try to load from the pickle file first
     # this might fail, because of wrong version of pickle, etc.
     # but it is faster than the backup solution (see except block)
-    with pkg_resources.resource_stream(__name__, f"fragments_{subset_size}.pkl") as f:
+    with files(__package__).joinpath(f"fragments_{subset_size}.pkl").open("rb") as f:
         precomputed = pickle.load(f)
 
 except:
     logger.info("Loading from pickle file failed. Parsing smi file instead.")
     # if loading from the pickle file fails, parse the smi file
     # this is slower than loading from the pickle file
-    with pkg_resources.resource_stream(__name__, f"fragments_{subset_size}.smi") as f:
+    with files(__package__).joinpath(f"fragments_{subset_size}.smi").open("rb") as f:
         fragments = [MolFromSmiles(line) for line in f]
         precomputed = precompute(fragments)
 

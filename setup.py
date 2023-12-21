@@ -15,7 +15,7 @@ rdkit_requirement = ["rdkit>=2022.3.3"] if not rdkit else []
 
 setup(
     name="hypothesis-rdkit",
-    version="0.5.2",
+    version="0.5.3",
     maintainer="Steffen Hirte",
     maintainer_email="shirte@users.noreply.github.com",
     packages=find_packages(),
@@ -25,8 +25,16 @@ setup(
     long_description_content_type="text/markdown",
     license="MIT",
     license_files=("LICENSE",),
-    install_requires=["hypothesis", "tqdm"] + rdkit_requirement,
-    extras_require={"dev": ["black", "isort"], "test": ["pytest"]},
+    install_requires=[
+        "hypothesis",
+        "tqdm",
+        "importlib-resources>=5; python_version<'3.9'",
+    ]
+    + rdkit_requirement,
+    extras_require={
+        "dev": ["black", "isort"],
+        "test": ["pytest", "pytest-cov", "pytest-watch"],
+    },
     entry_points={"hypothesis": {"_ = hypothesis_rdkit.hook:_hypothesis_setup_hook"}},
     include_package_data=True,
     classifiers=[
