@@ -3,15 +3,15 @@ from setuptools import find_packages, setup
 # some RDKit versions are not recognized by setuptools
 # -> check if RDKit is installed by attempting to import it
 # -> if RDKit can be imported, do not add it to install_requires
-rdkit = False
+rdkit_installed = False
 try:
-    from rdkit import Chem
+    import rdkit
 
-    rdkit = True
-except ImportError:
+    rdkit_installed = True
+except ModuleNotFoundError:
     pass
 
-rdkit_requirement = ["rdkit>=2022.3.3"] if not rdkit else []
+rdkit_requirement = ["rdkit>=2022.3.3"] if not rdkit_installed else []
 
 setup(
     name="hypothesis-rdkit",
