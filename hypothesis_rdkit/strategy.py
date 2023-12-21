@@ -48,10 +48,11 @@ except:
         fragments = [MolFromSmiles(line) for line in f]
         precomputed = precompute(fragments)
 
-    # TODO: save precomputed data to resources(!) to speed up future runs
+    # # TODO: save precomputed data to home dir to speed up future runs
     # file_name_pkl = f"fragments_{subset_size}.pkl"
     # with open(file_name_pkl, "wb") as f:
-    #     pickle.dump(precomputed, f)
+    #     # use protocol 3 to be compatible with python < 3.8
+    #     pickle.dump(precomputed, f, protocol=3)
 
 fragments = precomputed["fragments"]
 possible_dummy_labels = precomputed["possible_dummy_labels"]
