@@ -1,33 +1,21 @@
 import gzip
 import logging
 import os
-import pickle
 import signal
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from functools import partial
 from multiprocessing import Pool, cpu_count
 from urllib.request import urlretrieve
 
-import numpy as np
-from rdkit.Chem import (
-    BondType,
-    ForwardSDMolSupplier,
-    GetMolFrags,
-    MolFromSmiles,
-    MolToSmiles,
-)
+from rdkit import RDLogger
+from rdkit.Chem import BondType, ForwardSDMolSupplier, GetMolFrags, MolFromSmiles
 from rdkit.Chem.BRICS import BRICSDecompose, reverseReactions
 from rdkit.Chem.rdMolDescriptors import CalcExactMolWt
 from tqdm import tqdm
 
-from .util import (
-    get_possible_dummy_labels,
-    get_rotatable_bonds,
-    num_dummy_atoms,
-    precompute,
-)
+from .util import get_possible_dummy_labels, num_dummy_atoms
 
-__all__ = ["get_fragments", "main"]
+__all__ = ["generate_fragments"]
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +32,12 @@ logger = logging.getLogger(__name__)
 # * note 2: BRICS leaks memory and so we need to terminate consumers after a batch of
 #           molecules
 
+# disable RDKit logger
+RDLogger.logger().setLevel(RDLogger.CRITICAL)
+
 
 def download_chembl(chembl_version):
+    # TODO: download to user dir
     filename = f"chembl_{chembl_version:02d}.sdf.gz"
 
     # check if file already exists
@@ -113,6 +105,10 @@ def consumer(batch, timeout):
             pass
         except:
             pass
+
+    # TODO: check additional conditions here, especially normalize fragments with
+    #       MolToSmiles(MolFromSmiles(...))
+
     return result
 
 
@@ -129,7 +125,7 @@ def batch(stream, batch_size):
         yield batch
 
 
-def get_fragments(
+def generate_fragments(
     chembl_version=32,
     n_subset=100_000_000_000,
     n_processes=int(cpu_count() * 3 / 2),
@@ -145,7 +141,8 @@ def get_fragments(
     Parameters
     ----------
     n_subset : int, optional
-        Maximum number of molecules in ChEMBL to decompose. The default is 100_000_000_000.
+        Maximum number of molecules in ChEMBL to decompose. The default is
+        100_000_000_000.
 
     n_processes : int, optional
         Number of processes to use for decomposition. The default is 1.5 times
@@ -158,68 +155,59 @@ def get_fragments(
         of molecules in a batch is 100.
 
     timeout : int, optional
-        Timeout in seconds for the decomposition of a single molecule. The default is 5 * 60.
+        Timeout in seconds for the decomposition of a single molecule. The default is
+        5 * 60.
 
     max_weight : int, optional
         Maximum weight of a molecule to decompose. The default is 3000.
-    """
-    fragments_cache = f"fragments.pkl"
-    if not os.path.exists(fragments_cache):
-        molecules = producer(chembl_version, n_subset, max_weight)
-        batches = batch(tqdm(molecules), batch_size)
 
-        # note: we use maxtasksperchild=1 to keep the memory consumption low
-        # BRICS has memory leak problems and the used memory accumulates if processes are
-        # recycled --> kill processes after each batch
-        pool = Pool(n_processes, maxtasksperchild=1)
-        smiles_fragments = set()
-        try:
+    Returns
+    -------
+    fragments : list of rdkit.Chem.rdchem.Mol
+        List of fragments.
+    """
+    assert n_processes > 0, "n_processes must be > 0"
+
+    logger.info(f"Generating fragments using {n_processes} processes...")
+
+    molecules = producer(chembl_version, n_subset, max_weight)
+    batches = batch(tqdm(molecules), batch_size)
+
+    smiles_fragments = set()
+
+    if n_processes == 1:
+        # for debugging purposes
+        for b in batches:
+            smiles_fragments.update(consumer(b, timeout=timeout))
+    else:
+        # BRICS has memory leak problems and the used memory accumulates if
+        # processes are recycled
+        # --> kill processes after each batch
+        # --> use maxtasksperchild=1
+        with closing(Pool(n_processes, maxtasksperchild=1)) as pool:
             for result in pool.imap_unordered(
                 partial(consumer, timeout=timeout), batches
             ):
                 smiles_fragments.update(result)
-        finally:
-            pool.close()
-            pool.join()
 
+    # check fragments
+    fragments = []
+    for f in smiles_fragments:
         # remove fragments that are not valid smiles
-        fragments = []
-        for f in smiles_fragments:
-            mol = MolFromSmiles(f)
-            if mol is not None:
-                fragments.append(mol)
+        mol = MolFromSmiles(f)
+        if mol is None:
+            continue
 
-        with open(fragments_cache, "wb") as f:
-            pickle.dump(fragments, f)
-    else:
-        fragments = pickle.load(open(fragments_cache, "rb"))
+        fragments.append(mol)
 
-    # add a fragment [*:d][H] for each *possible* dummy label d if
-    # * the minimum number of rotatable bonds is > 0 and
-    # * there is no reverse reaction connecting fragments with anything other than a
-    #   single bond (we cannot connect a fragment with hydrogen using e.g. a double bond)
+    # Add a fragment [*:d][H] for each *possible* dummy label d *if* there is no reverse
+    # reaction connecting fragments with anything other than a single bond (we cannot
+    # connect a fragment with hydrogen using e.g. a double bond).
     possible_dummy_labels = get_possible_dummy_labels(fragments)
 
-    # for each dummy label, find the fragment that creates the fewest rotatable bonds
-    min_rotatable_bonds_per_dummy_label = {
-        dummy_label: np.inf for dummy_label in possible_dummy_labels
-    }
-
-    for fragment in fragments:
-        num_rotatable_bonds = get_rotatable_bonds(fragment)
-        for a in fragment.GetAtoms():
-            if a.GetSymbol() == "*":
-                dummy_label = a.GetIsotope()
-                min_rotatable_bonds_per_dummy_label[dummy_label] = min(
-                    min_rotatable_bonds_per_dummy_label[dummy_label],
-                    num_rotatable_bonds,
-                )
-
-    # find dummy labels that are connected via something that is not a single bond
     non_single_bond_dummy_atoms = set()
     for reaction in reverseReactions:
         for p in reaction.GetProducts():
-            s = MolToSmiles(p)
             if p.GetBondWithIdx(0).GetBondType() != BondType.SINGLE:
                 for matcher in reaction._matchers:
                     non_single_bond_dummy_atoms.add(
@@ -229,8 +217,7 @@ def get_fragments(
     dummy_fragments = [
         MolFromSmiles(f"[{d}*][H]")
         for d in possible_dummy_labels
-        if min_rotatable_bonds_per_dummy_label[d] > 0
-        and d not in non_single_bond_dummy_atoms
+        if d not in non_single_bond_dummy_atoms
     ]
     fragments = fragments + dummy_fragments
 
@@ -238,56 +225,3 @@ def get_fragments(
     fragments = sorted(fragments, key=lambda x: (num_dummy_atoms(x), x.GetNumAtoms()))
 
     return fragments
-
-
-def sample_subset(fragments, subset_size, temperature=10):
-    # sample subsets of fragments using a boltzmann distribution on the weights
-
-    # compute the weight for each fragment
-    weights = np.array([CalcExactMolWt(fragment) for fragment in fragments])
-
-    probabilities = np.exp(-weights / temperature)
-    probabilities = probabilities / probabilities.sum()
-
-    subset_indices = np.random.choice(
-        len(fragments), size=subset_size, replace=False, p=probabilities
-    )
-
-    fragment_subset = [
-        fragment for i, fragment in enumerate(fragments) if i in subset_indices
-    ]
-
-    return fragment_subset
-
-
-def main():
-    fragments = get_fragments()
-
-    # sample subsets of fragments using a boltzmann distribution on the weights
-    # compute the weight for each fragment
-    subset_sizes = [30_000, 100_000, len(fragments)]
-    temperature = 10
-
-    for subset_size in subset_sizes:
-        logger.info(f"Sampling subset of size {subset_size}")
-        fragment_subset = sample_subset(fragments, subset_size, temperature)
-
-        # precompute data
-        logger.info("Precompute data")
-        precomputed = precompute(fragment_subset)
-
-        logger.info("Write subset to disk")
-        file_name_pkl = f"fragments_{subset_size}.pkl"
-        with open(file_name_pkl, "wb") as f:
-            pickle.dump(precomputed, f)
-
-        # write only the fragments as smiles into a plain file (as backup if the pickle
-        # file cannot be loaded)
-        file_name_smi = f"fragments_{subset_size}.smi"
-        with open(file_name_smi, "w") as f:
-            for fragment in fragment_subset:
-                f.write(f"{MolToSmiles(fragment)}\n")
-
-
-if __name__ == "__main__":
-    main()

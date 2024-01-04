@@ -15,7 +15,7 @@ rdkit_requirement = ["rdkit>=2022.3.3"] if not rdkit_installed else []
 
 setup(
     name="hypothesis-rdkit",
-    version="0.5.3",
+    version="0.6.0",
     maintainer="Steffen Hirte",
     maintainer_email="shirte@users.noreply.github.com",
     packages=find_packages(),
@@ -27,8 +27,11 @@ setup(
     license_files=("LICENSE",),
     install_requires=[
         "hypothesis",
+        "numpy",
         "tqdm",
         "importlib-resources>=5; python_version<'3.9'",
+        "importlib_metadata>=4.6; python_version<'3.10'",
+        "platformdirs",
     ]
     + rdkit_requirement,
     extras_require={

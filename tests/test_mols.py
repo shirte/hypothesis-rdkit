@@ -1,4 +1,4 @@
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from rdkit.Chem import GetMolFrags, Mol, MolFromSmiles, rdMolDescriptors
 
 from hypothesis_rdkit import mols
@@ -10,7 +10,7 @@ dummy_pattern = MolFromSmiles("[*]")
 @settings(max_examples=1000)
 def test_mols(mol: Mol):
     # mols have atoms
-    assert len(mol.GetAtoms()) > 0
+    assert mol.GetNumAtoms() > 0
 
     # mols have no dummy atoms
     assert not mol.HasSubstructMatch(dummy_pattern)
@@ -31,3 +31,29 @@ def test_connected_components(mol: Mol):
 @settings(max_examples=1000)
 def test_rotatable_bonds(mol: Mol):
     assert rdMolDescriptors.CalcNumRotatableBonds(mol) <= 10
+
+
+@given(mols(max_conformers=10))
+@settings(
+    max_examples=100,
+    suppress_health_check=[
+        HealthCheck.too_slow,
+    ],
+)
+def test_conformers(mol: Mol):
+    assert mol.GetNumConformers() <= 10
+
+
+@given(mols(fragment_library_size="small"))
+def test_small_fragmentation_library(mol):
+    assert mol.GetNumAtoms() > 0
+
+
+@given(mols(fragment_library_size="large"))
+def test_large_fragmentation_library(mol):
+    assert mol.GetNumAtoms() > 0
+
+
+@given(mols(fragment_library_size="full"))
+def test_full_fragmentation_library(mol):
+    assert mol.GetNumAtoms() > 0

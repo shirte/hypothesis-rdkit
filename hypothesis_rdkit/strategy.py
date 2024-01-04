@@ -1,63 +1,32 @@
 import logging
-import pickle
 import string
 from functools import reduce
 
 import hypothesis.strategies as st
 from rdkit.Chem import (
+    AddHs,
+    AssignStereochemistry,
     BondType,
     CombineMols,
+    GetMolFrags,
+    MolFromInchi,
+    MolFromMolBlock,
     MolFromSmiles,
+    MolToInchi,
     MolToMolBlock,
     MolToSmiles,
     RemoveHs,
     SanitizeMol,
 )
+from rdkit.Chem.rdDistGeom import EmbedMultipleConfs
+from rdkit.Chem.rdMolDescriptors import CalcNumRotatableBonds
 
-from .fragment import precompute
+from .storage import load_fragment_data
 
-# import importlib.resources or fall back to the backport
-try:
-    from importlib.resources import files
-except ImportError:
-    from importlib_resources import files
+__all__ = ["mols", "smiles", "mol_blocks", "inchis", "representations"]
 
-__all__ = ["mols", "smiles", "mol_blocks"]
-
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-#
-# A set of fragments was precomputed from the ChEMBL database
-# Each fragment is annotated with its number of rotatable bonds
-# Load this set of fragments
-#
-subset_size = 30_000
-
-try:
-    # try to load from the pickle file first
-    # this might fail, because of wrong version of pickle, etc.
-    # but it is faster than the backup solution (see except block)
-    with files(__package__).joinpath(f"fragments_{subset_size}.pkl").open("rb") as f:
-        precomputed = pickle.load(f)
-
-except:
-    logger.info("Loading from pickle file failed. Parsing smi file instead.")
-    # if loading from the pickle file fails, parse the smi file
-    # this is slower than loading from the pickle file
-    with files(__package__).joinpath(f"fragments_{subset_size}.smi").open("rb") as f:
-        fragments = [MolFromSmiles(line) for line in f]
-        precomputed = precompute(fragments)
-
-    # # TODO: save precomputed data to home dir to speed up future runs
-    # file_name_pkl = f"fragments_{subset_size}.pkl"
-    # with open(file_name_pkl, "wb") as f:
-    #     # use protocol 3 to be compatible with python < 3.8
-    #     pickle.dump(precomputed, f, protocol=3)
-
-fragments = precomputed["fragments"]
-possible_dummy_labels = precomputed["possible_dummy_labels"]
-compatible_fragments = precomputed["compatible_fragments"]
-compatible_reactions = precomputed["compatible_reactions"]
 
 dummy_pattern = MolFromSmiles("[*]")
 
@@ -68,6 +37,8 @@ def mols(
     name=st.text(alphabet=list(string.ascii_lowercase), min_size=1),
     max_rotatable_bonds=st.just(10),
     n_connected_components=st.just(1),
+    max_conformers=st.just(0),
+    fragment_library_size="small",
 ):
     """Strategy for generating random molecules.
 
@@ -81,6 +52,18 @@ def mols(
         bonds than max_rotatable_bonds.
     n_connected_components : int or hypothesis.strategies.SearchStrategy
         Number of connected components in the molecule.
+    max_conformers : int or hypothesis.strategies.SearchStrategy
+        Maximum number of conformers to generate. Be aware that generating conformers
+        is slow.
+    fragment_library_size : str or int
+        Size of the fragment library to use. Can be 'small' (=30000), 'large' (=100000)
+        or an integer specifying the number of fragments to use. If an integer is
+        specified, the fragment library will be generated on the fly, which is slower.
+
+    Returns
+    -------
+    mol : rdkit.Chem.rdchem.Mol
+        Random molecule.
     """
     if isinstance(name, str):
         name = st.just(name)
@@ -88,12 +71,34 @@ def mols(
         n_connected_components = st.just(n_connected_components)
     if isinstance(max_rotatable_bonds, int):
         max_rotatable_bonds = st.just(max_rotatable_bonds)
+    if isinstance(max_conformers, int):
+        max_conformers = st.just(max_conformers)
+    if isinstance(fragment_library_size, str):
+        assert fragment_library_size in [
+            "small",
+            "large",
+            "full",
+        ], "fragment_library_size must be 'small', 'large', 'full'"
+        if fragment_library_size == "small":
+            fragment_library_size = 30000
+        elif fragment_library_size == "large":
+            fragment_library_size = 100000
+        elif fragment_library_size == "full":
+            fragment_library_size = 365069
 
     max_rotatable_bonds = draw(max_rotatable_bonds)
     n_connected_components = draw(n_connected_components)
+    max_conformers = draw(max_conformers)
 
     assert n_connected_components > 0, "n_connected_components must be > 0"
     assert max_rotatable_bonds >= 0, "max_rotatable_bonds must be >= 0"
+    assert max_conformers >= 0, "max_conformers must be >= 0"
+    assert isinstance(
+        fragment_library_size, int
+    ), "fragment_library_size must be an integer"
+
+    # load precomputed fragment data
+    fragment_data = load_fragment_data(fragment_library_size)
 
     # draw connected components independently
     if n_connected_components > 1:
@@ -102,6 +107,7 @@ def mols(
                 mols(
                     max_rotatable_bonds=max_rotatable_bonds,
                     n_connected_components=1,
+                    max_conformers=0,
                 )
             )
             for _ in range(n_connected_components)
@@ -112,11 +118,12 @@ def mols(
         while True:
             # start by drawing a random fragment and use it as seed
             # make sure that the seed has less rotatable bonds than max_rotatable_bonds
-            # TODO: expensive to compute this every time
-            suitable_seeds = [
-                (f, n) for (f, n) in fragments if n <= max_rotatable_bonds
-            ]
-            seed, n_rotatable_bonds_current = draw(st.sampled_from(suitable_seeds))
+            valid_seed_indices = fragment_data.get_fragment_indices(
+                max_rotatable_bonds=max_rotatable_bonds
+            )
+            seed_index = draw(st.sampled_from(valid_seed_indices))
+            seed = fragment_data.get_fragment(seed_index)
+            n_rotatable_bonds_current = fragment_data.get_rotatable_bonds(seed_index)
 
             # extend the seed by running compatible reactions on the seed
             # stop when molecule has no dummy atoms anymore (i.e. is fully built)
@@ -130,7 +137,9 @@ def mols(
 
                     # draw a random reaction compatible with the chosen dummy atom
                     reaction, right = draw(
-                        st.sampled_from(compatible_reactions[dummy_label])
+                        st.sampled_from(
+                            fragment_data.get_compatible_reactions(dummy_label)
+                        )
                     )
                     other_label = (
                         reaction._matchers[int(right)].GetAtomWithIdx(0).GetIsotope()
@@ -150,19 +159,16 @@ def mols(
                     )
                     n_remaining_rotatable_bonds += reaction_creates_nonrotatable_bond
 
-                    # draw a random fragment compatible with the drawn reaction, but
-                    # filter all fragments that would exceed the maximum number of
-                    # rotatable bonds
-                    # note: compatible_mapping[dummy_label] was sorted by number of
+                    # draw a random fragment compatible with the drawn reaction
+                    # note: the result of get_fragment_indices was sorted by number of
                     #       dummy atoms and size --> shrinking is done automatically
-                    # TODO: expensive to compute this every time
-                    feasible_fragments = [
-                        (f, n)
-                        for (f, n) in compatible_fragments[other_label]
-                        if n <= n_remaining_rotatable_bonds
-                    ]
+                    feasible_fragment_indices = fragment_data.get_fragment_indices(
+                        n_remaining_rotatable_bonds, other_label
+                    )
 
-                    fragment, n = draw(st.sampled_from(feasible_fragments))
+                    fragment_index = draw(st.sampled_from(feasible_fragment_indices))
+                    fragment = fragment_data.get_fragment(fragment_index)
+                    n = fragment_data.get_rotatable_bonds(fragment_index)
                     n -= reaction_creates_nonrotatable_bond
 
                     # run the reaction and collect the products
@@ -199,7 +205,14 @@ def mols(
             try:
                 seed.UpdatePropertyCache()
                 SanitizeMol(seed)
+                AssignStereochemistry(seed, force=True, cleanIt=True)
                 seed = RemoveHs(seed)
+
+                # AssignStereochemistry might add rotatable bonds
+                # --> check if the number of rotatable bonds is still valid
+                if CalcNumRotatableBonds(seed) > max_rotatable_bonds:
+                    raise ValueError("too many rotatable bonds")
+
                 break
             except:
                 continue
@@ -208,20 +221,83 @@ def mols(
     if name is not None:
         seed.SetProp("_Name", name)
 
-    # TODO: create conformer
+    # generate conformers
+    if max_conformers > 0 and seed.GetNumAtoms() > 1:
+        # we have to add hydrogens
+        seed = AddHs(seed)
+
+        random_seed = draw(st.integers(min_value=0, max_value=2**16 - 1))
+        try:
+            EmbedMultipleConfs(
+                seed,
+                numConfs=max_conformers,
+                maxAttempts=max_conformers * 2,
+                randomSeed=random_seed,
+            )
+        except:
+            # doesn't work for some molecules
+            pass
 
     return seed
 
 
 @st.composite
-def smiles(draw, **kwargs):
-    mol = draw(mols(**kwargs))
+def representations(draw, format, **kwargs):
+    while True:
+        try:
+            mol = draw(mols(**kwargs))
 
-    return f"{MolToSmiles(mol)} {mol.GetProp('_Name')}"
+            assert format in ["smiles", "mol_block", "inchi"]
+
+            if format == "smiles":
+                result = f"{MolToSmiles(mol)} {mol.GetProp('_Name')}"
+                reconstructed_mol = MolFromSmiles(result)
+            elif format == "mol_block":
+                result = MolToMolBlock(mol)
+                reconstructed_mol = MolFromMolBlock(result)
+            elif format == "inchi":
+                result = MolToInchi(mol)
+                reconstructed_mol = MolFromInchi(result)
+
+            # check that the reconstructed molecule does not have more rotatable bonds
+            # or connected components than the original molecule (this can happen
+            # during InChI conversion, i.e. when metals are disconnected)
+            old_rotatable_bonds = CalcNumRotatableBonds(mol)
+            new_rotatable_bonds = CalcNumRotatableBonds(reconstructed_mol)
+            assert new_rotatable_bonds <= old_rotatable_bonds, (
+                f"reconstructed molecule has more rotatable bonds "
+                f"({new_rotatable_bonds}) than original molecule "
+                f"({old_rotatable_bonds})"
+            )
+
+            new_n_connected_components = len(
+                GetMolFrags(reconstructed_mol, asMols=True)
+            )
+            old_n_connected_components = len(GetMolFrags(mol, asMols=True))
+            assert new_n_connected_components <= old_n_connected_components, (
+                f"reconstructed molecule has more connected components "
+                f"({new_n_connected_components}) than original molecule "
+                f"({old_n_connected_components})"
+            )
+
+            break
+        except Exception as e:
+            logger.debug(e)
+            continue
+
+    return result
+
+
+@st.composite
+def smiles(draw, **kwargs):
+    return draw(representations(format="smiles", **kwargs))
 
 
 @st.composite
 def mol_blocks(draw, **kwargs):
-    mol = draw(mols(**kwargs))
+    return draw(representations(format="mol_block", **kwargs))
 
-    return MolToMolBlock(mol)
+
+@st.composite
+def inchis(draw, **kwargs):
+    return draw(representations(format="inchi", **kwargs))
