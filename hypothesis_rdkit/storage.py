@@ -11,6 +11,7 @@ import numpy as np
 from platformdirs import user_data_dir
 from rdkit.Chem import MolFromSmiles, MolToSmiles
 from rdkit.Chem.BRICS import reverseReactions
+from rdkit.Chem.rdChemReactions import ReactionFromSmarts, ReactionToSmarts
 from rdkit.Chem.rdMolDescriptors import CalcExactMolWt
 
 from .fragment import generate_fragments
@@ -32,6 +33,7 @@ class FragmentData:
     def __init__(self, fragments):
         # compute the number of rotatable bonds for each fragment
         self.fragments = fragments
+        self.reverse_reactions = reverseReactions
         self.rotatable_bonds = [get_rotatable_bonds(f) for f in fragments]
         self.compatible_reactions = self._get_compatible_reactions_mapping()
         self.compatible_fragments = self._get_compatible_fragments_mapping()
@@ -109,16 +111,17 @@ class FragmentData:
                 )
             )
 
+        # precompute a ranking key for each fragment
+        # --> the next sorting calls will be faster
+        ranking_keys = [(num_dummy_atoms(f), f.GetNumAtoms()) for f in self.fragments]
+
         # sort the lists in each key by number of dummy atoms in the fragment and
         # fragment size --> shrinking
         for dummy_label in compatible_fragments.keys():
             for rotatable_bonds in compatible_fragments[dummy_label].keys():
                 compatible_fragments[dummy_label][rotatable_bonds] = sorted(
                     compatible_fragments[dummy_label][rotatable_bonds],
-                    key=lambda x: (
-                        num_dummy_atoms(self.fragments[x]),
-                        self.fragments[x].GetNumAtoms(),
-                    ),
+                    key=lambda x: ranking_keys[x],
                 )
 
         return compatible_fragments
@@ -147,6 +150,47 @@ class FragmentData:
         # TODO: n_rotatable_bonds_current is overestimating the number of rotatable
         #       bonds, because the first reaction bond is already included
         return self.rotatable_bonds[idx]
+
+    def __getstate__(self):
+        # ChemicalReaction is not backwards / upwards compatible
+        # --> store the reaction as SMARTS
+        # --> replace all occurences of reactions with their SMARTS representation
+        #     or indices
+        compatible_reactions = defaultdict(list)
+        for dummy_label in self.compatible_reactions.keys():
+            old_values = self.compatible_reactions[dummy_label]
+            compatible_reactions[dummy_label] = [
+                (self.reverse_reactions.index(reaction), right_side_free)
+                for (reaction, right_side_free) in old_values
+            ]
+
+        return {
+            "fragments": self.fragments,
+            "reverse_reactions": [ReactionToSmarts(r) for r in self.reverse_reactions],
+            "matchers": [r._matchers for r in self.reverse_reactions],
+            "rotatable_bonds": self.rotatable_bonds,
+            "compatible_reactions": compatible_reactions,
+            "compatible_fragments": self.compatible_fragments,
+        }
+
+    def __setstate__(self, state):
+        self.fragments = state["fragments"]
+        self.reverse_reactions = [
+            ReactionFromSmarts(r) for r in state["reverse_reactions"]
+        ]
+        self.rotatable_bonds = state["rotatable_bonds"]
+        self.compatible_reactions = state["compatible_reactions"]
+        self.compatible_fragments = state["compatible_fragments"]
+
+        for r, matchers in zip(self.reverse_reactions, state["matchers"]):
+            r._matchers = matchers
+
+        for dummy_label in self.compatible_reactions.keys():
+            old_values = self.compatible_reactions[dummy_label]
+            self.compatible_reactions[dummy_label] = [
+                (self.reverse_reactions[rid], right_side_free)
+                for (rid, right_side_free) in old_values
+            ]
 
 
 def sample_subset(fragments, subset_size, temperature=10):

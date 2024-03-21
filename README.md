@@ -73,3 +73,9 @@ def test_inchi(inchi : str):
     mol = MolFromInchi(inchi)
     assert mol is not None and mol.GetNumAtoms() > 0
 ```
+
+
+## Development
+
+All fragment files are generated during a test run (```pytest```) in the user data 
+directory. On Linux, this is ~/.local/share/hypothesis_rdkit/{version}/.
