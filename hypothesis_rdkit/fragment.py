@@ -7,7 +7,6 @@ from functools import partial
 from multiprocessing import Pool, cpu_count
 from urllib.request import urlretrieve
 
-from rdkit import RDLogger
 from rdkit.Chem import BondType, ForwardSDMolSupplier, GetMolFrags, MolFromSmiles
 from rdkit.Chem.BRICS import BRICSDecompose, reverseReactions
 from rdkit.Chem.rdMolDescriptors import CalcExactMolWt
@@ -31,9 +30,6 @@ logger = logging.getLogger(__name__)
 #           some molecules (there are examples with a weight of 1600 Da)
 # * note 2: BRICS leaks memory and so we need to terminate consumers after a batch of
 #           molecules
-
-# disable RDKit logger
-RDLogger.logger().setLevel(RDLogger.CRITICAL)
 
 
 def download_chembl(chembl_version):
