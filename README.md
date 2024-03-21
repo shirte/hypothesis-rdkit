@@ -12,6 +12,8 @@ https://chemistry-europe.onlinelibrary.wiley.com/doi/10.1002/cmdc.200800178).
 
 ```bash
 pip install -U hypothesis-rdkit
+# or
+conda install -c conda-forge hypothesis-rdkit
 ```
 
 ## Usage
